@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PolyGun.io - 3D WebRTC Shooter</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+
+<body>
+  <!-- 3D Canvas -->
+  <canvas id="game-canvas"></canvas>
+
+  <!-- Crosshair -->
+  <div id="crosshair"></div>
+  <div id="hit-marker"></div>
+
+  <!-- UI Overlay Layer -->
+  <div id="ui-layer">
+
+    <!-- Screen: Menu -->
+    <div id="screen-menu" class="screen active">
+      <div class="glass-panel">
+        <h1 class="game-title">POLY<span class="highlight">GUN</span></h1>
+        <p class="subtitle">Browser-based 3D Shooter</p>
+
+        <div class="form-row">
+          <div class="input-group split">
+            <label for="username">Player Name</label>
+            <input type="text" id="username" placeholder="Enter your name" maxlength="15" autocomplete="off" />
+          </div>
+          <div class="input-group split">
+            <label for="weapon-select">Weapon</label>
+            <select id="weapon-select" class="custom-select">
+              <option value="rifle">Assault Rifle</option>
+              <option value="pistol">Pistol</option>
+              <option value="shotgun">Shotgun</option>
+              <option value="sniper">Sniper</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="menu-actions">
+          <div class="action-card">
+            <h3>Host Game</h3>
+            <p>Create a new room and invite friends.</p>
+            <button id="btn-host" class="btn primary">Create Room</button>
+          </div>
+          <div class="action-divider"><span>OR</span></div>
+          <div class="action-card">
+            <h3>Join Game</h3>
+            <p>Enter a room code to join.</p>
+            <input type="text" id="room-code-input" placeholder="Room Code (e.g. A1B2C3)" maxlength="6"
+              autocomplete="off" />
+            <button id="btn-join" class="btn secondary">Join Room</button>
+          </div>
+        </div>
+        <div id="connection-status" class="status-message"></div>
+      </div>
+    </div>
+
+    <!-- Screen: Lobby -->
+    <div id="screen-lobby" class="screen">
+      <div class="glass-panel wide">
+        <div class="lobby-header">
+          <h2>Room: <span id="display-room-code" class="highlight">------</span></h2>
+          <p>Share this code with your friends!</p>
+        </div>
+
+        <div class="lobby-content">
+          <div class="player-list-container">
+            <h3>Players (<span id="player-count">1</span>/8)</h3>
+            <ul id="lobby-player-list">
+              <!-- Populated via JS -->
+            </ul>
+          </div>
+          <div class="game-settings">
+            <h3>Game Settings</h3>
+            <div class="settings-group">
+              <label>Game Mode</label>
+              <select id="setting-mode" disabled>
+                <option value="ffa">Free for All</option>
+                <option value="tdm">Team Deathmatch</option>
+                <option value="lms">Last Man Standing</option>
+              </select>
+              <small id="host-only-msg" class="host-only">* Only Host can change settings</small>
+            </div>
+          </div>
+        </div>
+
+        <div class="lobby-footer">
+          <button id="btn-leave-lobby" class="btn danger">Leave Room</button>
+          <button id="btn-start-game" class="btn primary disabled">Start Game (Host Only)</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Screen: Game HUD -->
+    <div id="screen-hud" class="screen">
+      <div class="hud-top-left">
+        <div class="scoreboard-container">
+          <div class="mode-indicator" id="hud-mode">Free For All</div>
+          <ul id="hud-leaderboard">
+            <!-- Leaderboard rows -->
+          </ul>
+        </div>
+      </div>
+      <div class="hud-top-right">
+        <div class="fps-counter"><span id="fps-val">60</span> FPS</div>
+        <div class="ping-counter"><span id="ping-val">0</span>ms ping</div>
+      </div>
+      <div class="hud-bottom-left">
+        <div class="health-bar-container">
+          <div class="health-bar" id="health-bar-fill"></div>
+          <div class="health-text"><span id="health-val">100</span> / 100 HP</div>
+        </div>
+      </div>
+      <div class="hud-bottom-right">
+        <div class="ammo-container">
+          <span id="ammo-val" class="highlight">30</span><span class="ammo-max">/30</span>
+        </div>
+      </div>
+
+      <!-- Sniper Scope Overlay -->
+      <div id="scope-overlay" class="scope-overlay">
+        <div class="scope-crosshair-h"></div>
+        <div class="scope-crosshair-v"></div>
+        <div class="scope-center-dot"></div>
+      </div>
+      <!-- Killfeed -->
+      <div id="killfeed" class="killfeed"></div>
+
+      <!-- Death Screen Overlay -->
+      <div id="death-overlay">
+        <h1 class="wasted">WASTED</h1>
+        <p>Killed by <span id="killer-name" class="highlight">...</span></p>
+        <p class="respawn-timer" id="respawn-timer">Respawning in 3...</p>
+      </div>
+    </div>
+
+    <!-- Helper: Click to Lock -->
+    <div id="click-to-lock">
+      <div class="lock-panel">
+        <h2>Game Paused</h2>
+        <p>Click anywhere to resume</p>
+        <button id="btn-quit" class="btn secondary" style="margin-top: 20px; width: 100%;">Quit to Menu</button>
+        <small style="display: block; margin-top: 15px;">Press ESC to release cursor</small>
+      </div>
+    </div>
+
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+
+</html>
