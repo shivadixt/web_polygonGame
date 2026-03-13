@@ -1,0 +1,17 @@
+{
+  "name": "polygun-server",
+  "version": "1.0.0",
+  "description": "PeerJS signaling server for PolyGun.io",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "peer": "^1.0.2",
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

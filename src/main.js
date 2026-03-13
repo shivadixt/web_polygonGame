@@ -8,7 +8,6 @@ const CONFIG = {
   version: '1.0.0',
   syncRate: 1000 / 20, // 20hz tick rate for networking
   playerSpeed: 10.0,
-  playerSpeed: 10.0,
   playerJumpForce: 10.0,  // Snappier jump
   gravity: 30.0,          // Faster fall
   mapBounds: 200,
@@ -126,6 +125,47 @@ function switchScreen(screenId) {
  * NETWORKING LOGIC (PEER.JS)
  */
 
+// ICE servers for reliable WebRTC connections across NATs and firewalls
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
+  { urls: 'stun:stun.relay.metered.ca:80' },
+  {
+    urls: 'turn:global.relay.metered.ca:80',
+    username: 'e7d484bfc74a3995d09f1274',
+    credential: 'xlQOrmEJn0BT+NzQ'
+  },
+  {
+    urls: 'turn:global.relay.metered.ca:80?transport=tcp',
+    username: 'e7d484bfc74a3995d09f1274',
+    credential: 'xlQOrmEJn0BT+NzQ'
+  },
+  {
+    urls: 'turn:global.relay.metered.ca:443',
+    username: 'e7d484bfc74a3995d09f1274',
+    credential: 'xlQOrmEJn0BT+NzQ'
+  },
+  {
+    urls: 'turns:global.relay.metered.ca:443?transport=tcp',
+    username: 'e7d484bfc74a3995d09f1274',
+    credential: 'xlQOrmEJn0BT+NzQ'
+  }
+];
+
+const ROOM_PREFIX = 'POLYGUN-';
+
+// ============================================================
+// 🔧 PEER SERVER CONFIG — UPDATE THIS AFTER DEPLOYING SERVER
+// ============================================================
+// Deploy the server/ folder to Render.com (free), then paste
+// your Render URL here (e.g. 'polygun-server.onrender.com').
+// Leave as null to use the default PeerJS cloud (unreliable).
+const CUSTOM_PEER_HOST = null;
+// ============================================================
+
 function generateRoomCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let result = '';
@@ -140,36 +180,65 @@ function initPeerSession() {
     GameState.peer.destroy();
   }
 
-  const idToRequest = GameState.isHost ? GameState.roomCode : null;
-  GameState.peer = new Peer(idToRequest, {
-    debug: 2
-    // Uses default cloud server for signaling
-  });
+  // Host registers with prefixed room code as Peer ID; clients get a random ID
+  const idToRequest = GameState.isHost ? (ROOM_PREFIX + GameState.roomCode) : undefined;
+
+  // Build PeerJS options — use custom server if configured, else fallback to cloud
+  const peerOptions = {
+    debug: 1,
+    config: {
+      iceServers: ICE_SERVERS
+    }
+  };
+
+  if (CUSTOM_PEER_HOST) {
+    peerOptions.host = CUSTOM_PEER_HOST;
+    peerOptions.port = 443;
+    peerOptions.secure = true;
+    peerOptions.path = '/polygun';
+    peerOptions.key = 'polygun';
+    console.log('Using custom PeerJS server:', CUSTOM_PEER_HOST);
+  } else {
+    console.warn('⚠ No custom PeerJS server configured — using default cloud (may be unreliable).');
+  }
+
+  GameState.peer = new Peer(idToRequest, peerOptions);
 
   GameState.peer.on('open', (id) => {
     GameState.localPlayer.id = id;
 
     if (GameState.isHost) {
       console.log('Host created room:', id);
-      UI.lobby.roomCodeDisplay.innerText = id;
+      // Display the short room code (without prefix) to users
+      UI.lobby.roomCodeDisplay.innerText = GameState.roomCode;
       switchScreen('lobby');
       updateLobbyPlayerList();
     } else {
-      console.log('Client got ID:', id, 'Connecting to Host:', GameState.roomCode);
-      connectToHost(GameState.roomCode);
+      console.log('Client got ID:', id, 'Connecting to Host:', ROOM_PREFIX + GameState.roomCode);
+      connectToHost(ROOM_PREFIX + GameState.roomCode);
     }
   });
 
   GameState.peer.on('error', (err) => {
-    console.error('PeerJS error:', err.type);
-    UI.menu.status.innerText = `Error: ${err.type}`;
+    console.error('PeerJS error:', err.type, err);
     if (err.type === 'unavailable-id') {
-      UI.menu.status.innerText = 'Room code already exists. Please try again.';
+      UI.menu.status.innerText = '⚠ Room code collision. Regenerating...';
+      // Auto-retry with a new code
+      GameState.roomCode = generateRoomCode();
+      setTimeout(() => initPeerSession(), 500);
+      return;
     }
     if (err.type === 'peer-unavailable') {
-      UI.menu.status.innerText = 'Room not found. Check the code.';
-      switchScreen('menu'); // go back to menu if joining failed
+      UI.menu.status.innerText = '❌ Room not found. Double-check the code and make sure host is online.';
+      switchScreen('menu');
+      return;
     }
+    if (err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error' || err.type === 'socket-closed') {
+      UI.menu.status.innerText = '⚠ Network error. Retrying connection...';
+      setTimeout(() => initPeerSession(), 2000);
+      return;
+    }
+    UI.menu.status.innerText = `❌ Connection error: ${err.type}`;
   });
 
   // If host, accept incoming connections
@@ -188,11 +257,29 @@ function initPeerSession() {
   }
 }
 
-function connectToHost(hostId) {
-  const conn = GameState.peer.connect(hostId);
-  UI.menu.status.innerText = 'Connecting...';
+function connectToHost(hostId, retryCount = 0) {
+  const conn = GameState.peer.connect(hostId, {
+    reliable: true
+  });
+  UI.menu.status.innerText = retryCount > 0 ? '🔄 Retrying connection...' : '🔗 Connecting to room...';
+
+  // Connection timeout — if we don't connect within 10s, retry once
+  const timeout = setTimeout(() => {
+    if (!conn.open) {
+      console.warn('Connection timed out, attempt', retryCount + 1);
+      conn.close();
+      if (retryCount < 2) {
+        UI.menu.status.innerText = '⏳ Connection slow, retrying...';
+        connectToHost(hostId, retryCount + 1);
+      } else {
+        UI.menu.status.innerText = '❌ Could not reach the host. Check the room code and ensure the host is online.';
+        switchScreen('menu');
+      }
+    }
+  }, 10000);
 
   conn.on('open', () => {
+    clearTimeout(timeout);
     console.log('Connected to Host');
     GameState.hostConn = conn;
     setupConnectionHandlers(conn);
@@ -207,8 +294,21 @@ function connectToHost(hostId) {
       }
     });
 
-    UI.lobby.roomCodeDisplay.innerText = hostId;
+    // Display the short room code (without prefix)
+    UI.lobby.roomCodeDisplay.innerText = GameState.roomCode;
     switchScreen('lobby');
+  });
+
+  conn.on('error', (err) => {
+    clearTimeout(timeout);
+    console.error('Connection error:', err);
+    if (retryCount < 2) {
+      UI.menu.status.innerText = '⚠ Connection failed, retrying...';
+      setTimeout(() => connectToHost(hostId, retryCount + 1), 1500);
+    } else {
+      UI.menu.status.innerText = '❌ Failed to connect after multiple attempts.';
+      switchScreen('menu');
+    }
   });
 }
 
@@ -2081,9 +2181,10 @@ function shootWeapon() {
     let maxTravelDist = 1000; // Far away if no hit
     let hitPlayerId = null;
     let hitPlayerName = null;
+    let hit = null;
 
     if (intersects.length > 0) {
-      const hit = intersects[0];
+      hit = intersects[0];
 
       // CRITICAL FIX: The Three.js Raycaster returns scaled/transformed distances for objects 
       // inside deeply nested Groups (like the buildings). We MUST calculate the true 
@@ -2466,29 +2567,6 @@ function updateLeaderboard() {
 setTimeout(updateHUD, 100);
 setTimeout(updateLeaderboard, 100);
 
-// Set up UI Event Listeners
-UI.menu.btnHost.addEventListener('click', () => {
-  GameState.localPlayer.name = UI.menu.username.value.trim() || 'Host';
-  GameState.localPlayer.color = CONFIG.playerColors[Math.floor(Math.random() * CONFIG.playerColors.length)];
-  GameState.isHost = true;
-  GameState.roomCode = generateRoomCode();
-  UI.menu.status.innerText = 'Creating room...';
-  initPeerSession();
-});
-
-UI.menu.btnJoin.addEventListener('click', () => {
-  const code = UI.menu.roomCode.value.trim().toUpperCase();
-  if (code.length < 5) {
-    UI.menu.status.innerText = 'Please enter a valid room code.';
-    return;
-  }
-  GameState.localPlayer.name = UI.menu.username.value.trim() || 'Player';
-  GameState.localPlayer.color = CONFIG.playerColors[Math.floor(Math.random() * CONFIG.playerColors.length)];
-  GameState.isHost = false;
-  GameState.roomCode = code;
-  UI.menu.status.innerText = 'Initializing...';
-  initPeerSession();
-});
 
 // Initial UI State
 switchScreen('menu');

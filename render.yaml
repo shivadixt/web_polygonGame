@@ -1,0 +1,13 @@
+# Render Blueprint — deploy the PeerJS server with one click
+# Go to https://dashboard.render.com/blueprints and connect this repo
+services:
+  - type: web
+    name: polygun-server
+    runtime: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: node server.js
+    plan: free
+    envVars:
+      - key: NODE_ENV
+        value: production
