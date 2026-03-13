@@ -163,7 +163,7 @@ const ROOM_PREFIX = 'POLYGUN-';
 // Deploy the server/ folder to Render.com (free), then paste
 // your Render URL here (e.g. 'polygun-server.onrender.com').
 // Leave as null to use the default PeerJS cloud (unreliable).
-const CUSTOM_PEER_HOST = null;
+const CUSTOM_PEER_HOST = 'polygun-server.onrender.com';
 // ============================================================
 
 function generateRoomCode() {
