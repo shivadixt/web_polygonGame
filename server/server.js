@@ -24,7 +24,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 
 const peerServer = ExpressPeerServer(server, {
   path: '/polygun',
-  allow_discovery: false,
+  allow_discovery: true,  // Allow basic discovery if needed
   alive_timeout: 60000,   // 60 second heartbeat — keeps peers registered longer
   key: 'polygun',
   proxied: true            // IMPORTANT: Required when behind reverse proxy (Render, Railway, etc.)
@@ -33,9 +33,13 @@ const peerServer = ExpressPeerServer(server, {
 app.use('/', peerServer);
 
 peerServer.on('connection', (client) => {
-  console.log('✅ Peer connected:', client.getId());
+  console.log(`[${new Date().toISOString()}] ✅ Peer connected: ${client.getId()}`);
 });
 
 peerServer.on('disconnect', (client) => {
-  console.log('👋 Peer disconnected:', client.getId());
+  console.log(`[${new Date().toISOString()}] 👋 Peer disconnected: ${client.getId()}`);
+});
+
+peerServer.on('error', (err) => {
+  console.error(`[${new Date().toISOString()}] ❌ PeerServer Error:`, err);
 });

@@ -68,6 +68,7 @@ const GameState = {
     right: false,
     space: false,
     shift: false,
+    slide: false,      // true while C-slide is active
     mouseDown: false
   }
 };
@@ -125,46 +126,61 @@ function switchScreen(screenId) {
  * NETWORKING LOGIC (PEER.JS)
  */
 
-// ICE servers for reliable WebRTC connections across NATs and firewalls
-const ICE_SERVERS = [
+// ============================================================
+// 🔧 METERED.CA TURN SERVER — GET YOUR FREE API KEY
+// ============================================================
+// 1. Go to https://www.metered.ca/ and sign up (FREE, no credit card)
+// 2. Create an app (name it anything, e.g. "polygun")
+// 3. Go to Dashboard → your app → API Key
+// 4. Paste the API key below AND update the app name in the URL
+const METERED_API_KEY = '';          // ← PASTE YOUR API KEY HERE
+const METERED_APP_NAME = 'polygun';  // ← YOUR APP NAME FROM METERED
+// ============================================================
+
+// Base STUN servers (always work for same-network connections)
+const BASE_ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:stun2.l.google.com:19302' },
   { urls: 'stun:stun3.l.google.com:19302' },
-  { urls: 'stun:stun4.l.google.com:19302' },
-  { urls: 'stun:stun.relay.metered.ca:80' },
-  {
-    urls: 'turn:global.relay.metered.ca:80',
-    username: 'e7d484bfc74a3995d09f1274',
-    credential: 'xlQOrmEJn0BT+NzQ'
-  },
-  {
-    urls: 'turn:global.relay.metered.ca:80?transport=tcp',
-    username: 'e7d484bfc74a3995d09f1274',
-    credential: 'xlQOrmEJn0BT+NzQ'
-  },
-  {
-    urls: 'turn:global.relay.metered.ca:443',
-    username: 'e7d484bfc74a3995d09f1274',
-    credential: 'xlQOrmEJn0BT+NzQ'
-  },
-  {
-    urls: 'turns:global.relay.metered.ca:443?transport=tcp',
-    username: 'e7d484bfc74a3995d09f1274',
-    credential: 'xlQOrmEJn0BT+NzQ'
-  }
+  { urls: 'stun:stun4.l.google.com:19302' }
 ];
+
+// Fetch real TURN credentials from Metered.ca (needed for cross-network play)
+async function fetchIceServers() {
+  if (!METERED_API_KEY) {
+    console.warn('⚠ No Metered.ca API key set — TURN relay disabled.');
+    console.warn('  Cross-network play will NOT work. Get a free key at https://www.metered.ca/');
+    return BASE_ICE_SERVERS;
+  }
+
+  try {
+    const resp = await fetch(
+      `https://${METERED_APP_NAME}.metered.live/api/v1/turn/credentials?apiKey=${METERED_API_KEY}`
+    );
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const turnServers = await resp.json();
+    console.log('✅ Fetched TURN credentials from Metered.ca:', turnServers.length, 'servers');
+    return [...BASE_ICE_SERVERS, ...turnServers];
+  } catch (e) {
+    console.error('Failed to fetch TURN credentials:', e);
+    return BASE_ICE_SERVERS;
+  }
+}
 
 const ROOM_PREFIX = 'POLYGUN-';
 
-// ============================================================
-// 🔧 PEER SERVER CONFIG — UPDATE THIS AFTER DEPLOYING SERVER
-// ============================================================
-// Deploy the server/ folder to Render.com (free), then paste
-// your Render URL here (e.g. 'polygun-server.onrender.com').
-// Leave as null to use the default PeerJS cloud (unreliable).
 const CUSTOM_PEER_HOST = 'polygun-server.onrender.com';
-// ============================================================
+
+/**
+ * HELPER: UI MESSAGE
+ */
+function setStatus(msg, type = 'info') {
+  if (!UI.menu.status) return;
+  UI.menu.status.innerText = msg;
+  UI.menu.status.className = 'status-message ' + type;
+  console.log(`[STATUS] ${msg}`);
+}
 
 function generateRoomCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -175,10 +191,13 @@ function generateRoomCode() {
   return result;
 }
 
-function initPeerSession() {
+async function initPeerSession() {
   if (GameState.peer) {
     GameState.peer.destroy();
   }
+
+  // Fetch fresh TURN credentials before connecting
+  const iceServers = await fetchIceServers();
 
   // Host registers with prefixed room code as Peer ID; clients get a random ID
   const idToRequest = GameState.isHost ? (ROOM_PREFIX + GameState.roomCode) : undefined;
@@ -187,7 +206,7 @@ function initPeerSession() {
   const peerOptions = {
     debug: 1,
     config: {
-      iceServers: ICE_SERVERS
+      iceServers: iceServers
     }
   };
 
@@ -206,10 +225,10 @@ function initPeerSession() {
 
   GameState.peer.on('open', (id) => {
     GameState.localPlayer.id = id;
+    setStatus('✅ Connected to signaling server', 'success');
 
     if (GameState.isHost) {
       console.log('Host created room:', id);
-      // Display the short room code (without prefix) to users
       UI.lobby.roomCodeDisplay.innerText = GameState.roomCode;
       switchScreen('lobby');
       updateLobbyPlayerList();
@@ -221,24 +240,34 @@ function initPeerSession() {
 
   GameState.peer.on('error', (err) => {
     console.error('PeerJS error:', err.type, err);
+    
+    const errorMessages = {
+      'unavailable-id': '⚠ Room code collision. Regenerating...',
+      'peer-unavailable': '❌ Room not found. Double-check the code and ensure host is online.',
+      'network': '⚠ Network error. Check your internet or Render server status.',
+      'server-error': '❌ Signaling server error. It might be waking up...',
+      'socket-error': '❌ Socket error. Connection closed.',
+      'socket-closed': '❌ Socket closed unexpectedly.'
+    };
+
+    const msg = errorMessages[err.type] || `❌ Connection error: ${err.type}`;
+    setStatus(msg, 'error');
+
     if (err.type === 'unavailable-id') {
-      UI.menu.status.innerText = '⚠ Room code collision. Regenerating...';
-      // Auto-retry with a new code
       GameState.roomCode = generateRoomCode();
-      setTimeout(() => initPeerSession(), 500);
+      setTimeout(() => initPeerSession(), 1000);
       return;
     }
+
     if (err.type === 'peer-unavailable') {
-      UI.menu.status.innerText = '❌ Room not found. Double-check the code and make sure host is online.';
       switchScreen('menu');
       return;
     }
-    if (err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error' || err.type === 'socket-closed') {
-      UI.menu.status.innerText = '⚠ Network error. Retrying connection...';
-      setTimeout(() => initPeerSession(), 2000);
-      return;
+
+    if (['network', 'server-error', 'socket-error', 'socket-closed'].includes(err.type)) {
+      setStatus('🔄 Retrying connection in 3s...', 'info');
+      setTimeout(() => initPeerSession(), 3000);
     }
-    UI.menu.status.innerText = `❌ Connection error: ${err.type}`;
   });
 
   // If host, accept incoming connections
@@ -258,33 +287,36 @@ function initPeerSession() {
 }
 
 function connectToHost(hostId, retryCount = 0) {
-  const conn = GameState.peer.connect(hostId, {
-    reliable: true
-  });
-  UI.menu.status.innerText = retryCount > 0 ? '🔄 Retrying connection...' : '🔗 Connecting to room...';
+  setStatus(retryCount > 0 ? `🔄 Retrying connection (Attempt ${retryCount + 1})...` : '🔗 Connecting to room...', 'info');
 
-  // Connection timeout — if we don't connect within 10s, retry once
+  const conn = GameState.peer.connect(hostId, {
+    reliable: true,
+    connectionPriority: 'high'
+  });
+
+  // Increased timeout for Render wake-up and cross-network latency
+  const TIMEOUT_MS = 15000;
   const timeout = setTimeout(() => {
     if (!conn.open) {
-      console.warn('Connection timed out, attempt', retryCount + 1);
+      console.warn(`Connection timeout at ${TIMEOUT_MS}ms, attempt ${retryCount + 1}`);
       conn.close();
-      if (retryCount < 2) {
-        UI.menu.status.innerText = '⏳ Connection slow, retrying...';
+      if (retryCount < 3) {
+        setStatus('⏳ Host is slow to respond, retrying...', 'info');
         connectToHost(hostId, retryCount + 1);
       } else {
-        UI.menu.status.innerText = '❌ Could not reach the host. Check the room code and ensure the host is online.';
+        setStatus('❌ Could not reach host. Verify code and ensure host is active.', 'error');
         switchScreen('menu');
       }
     }
-  }, 10000);
+  }, TIMEOUT_MS);
 
   conn.on('open', () => {
     clearTimeout(timeout);
-    console.log('Connected to Host');
+    setStatus('✅ Joined Room!', 'success');
+    console.log('Connected to Host:', hostId);
     GameState.hostConn = conn;
     setupConnectionHandlers(conn);
 
-    // Tell the host who we are
     sendToHost({
       type: 'JOIN',
       player: {
@@ -294,20 +326,15 @@ function connectToHost(hostId, retryCount = 0) {
       }
     });
 
-    // Display the short room code (without prefix)
     UI.lobby.roomCodeDisplay.innerText = GameState.roomCode;
     switchScreen('lobby');
   });
 
   conn.on('error', (err) => {
     clearTimeout(timeout);
-    console.error('Connection error:', err);
-    if (retryCount < 2) {
-      UI.menu.status.innerText = '⚠ Connection failed, retrying...';
-      setTimeout(() => connectToHost(hostId, retryCount + 1), 1500);
-    } else {
-      UI.menu.status.innerText = '❌ Failed to connect after multiple attempts.';
-      switchScreen('menu');
+    console.error('Connection Data Error:', err);
+    if (retryCount < 3) {
+      setTimeout(() => connectToHost(hostId, retryCount + 1), 2000);
     }
   });
 }
@@ -463,11 +490,14 @@ function updateLobbyPlayerList() {
 
   rawList.forEach(p => {
     const li = document.createElement('li');
+    // The player ID is the full Peer ID including prefix if they are the host
+    const isThisPlayerHost = p.id === (ROOM_PREFIX + GameState.roomCode);
+    
     li.innerHTML = `
       <div style="display:flex; align-items:center; gap: 10px;">
         <div style="width:16px;height:16px;border-radius:50%;background-color:#${p.color.toString(16).padStart(6, '0')}"></div>
-        <span>${p.name}</span>
-        ${(p.id === (GameState.isHost ? GameState.localPlayer.id : GameState.roomCode)) ? '<span class="player-tag-host">HOST</span>' : ''}
+        <span>${p.name} ${p.id === GameState.localPlayer.id ? '(You)' : ''}</span>
+        ${isThisPlayerHost ? '<span class="player-tag-host">HOST</span>' : ''}
       </div>
     `;
     UI.lobby.playerList.appendChild(li);
@@ -584,8 +614,12 @@ UI.menu.btnJoin.addEventListener('click', () => {
   const code = UI.menu.roomCode.value.trim().toUpperCase();
 
   if (code.length !== 6) {
-    UI.menu.status.innerText = 'Enter a valid 6-char room code.';
+    setStatus('❌ Enter a 6-character room code.', 'error');
     return;
+  }
+
+  if (!METERED_API_KEY) {
+    console.warn('Networking: Missing TURN key. Peer-to-peer may fail across networks.');
   }
 
   GameState.localPlayer.name = name;
@@ -627,9 +661,7 @@ let spawnPoints = [];
 // Store all water materials to animate them in the main loop
 const waterMaterials = [];
 
-// Player Mesh logic
-const bodyGeometry = new THREE.BoxGeometry(1, 1.5, 1);
-const headGeometry = new THREE.SphereGeometry(0.5, 16, 16);
+// Player & Bullet Geometry
 const bulletGeometry = new THREE.CylinderGeometry(0.02, 0.02, 0.6, 8); // Tighter tracer cylinder
 bulletGeometry.rotateX(Math.PI / 2); // Pre-rotate so it aligns naturally with Z axis forwards
 
@@ -1399,24 +1431,171 @@ function buildMap() {
 function createPlayerMesh(colorHex) {
   const group = new THREE.Group();
 
-  const bodyMat = new THREE.MeshStandardMaterial({ color: colorHex, roughness: 0.4 });
-  const body = new THREE.Mesh(bodyGeometry, bodyMat);
-  body.position.y = 0.75;
-  body.castShadow = true;
-  group.add(body);
+  // --- Materials (low-poly flat shading) ---
+  const skinMat = new THREE.MeshStandardMaterial({ color: 0xf5d0a9, roughness: 0.8, flatShading: true });
+  const hairMat = new THREE.MeshStandardMaterial({ color: 0x5c3317, roughness: 1.0, flatShading: true });
+  const shortsMat = new THREE.MeshStandardMaterial({ color: 0x3a3a3a, roughness: 0.9, flatShading: true });
+  const accentMat = new THREE.MeshStandardMaterial({ color: colorHex, roughness: 0.5, flatShading: true });
+  const gunMat = new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.7, roughness: 0.3, flatShading: true });
+  const shoeMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.9, flatShading: true });
 
-  const headMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.3 });
-  const head = new THREE.Mesh(headGeometry, headMat);
-  head.position.y = 1.75;
+  // --- Head ---
+  const headGeo = new THREE.BoxGeometry(0.55, 0.6, 0.55, 1, 1, 1);
+  const head = new THREE.Mesh(headGeo, skinMat);
+  head.position.y = 1.95;
   head.castShadow = true;
   group.add(head);
 
-  // Gun proxy
-  const gunGeo = new THREE.BoxGeometry(0.2, 0.2, 0.8);
-  const gunMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
-  const gun = new THREE.Mesh(gunGeo, gunMat);
-  gun.position.set(0.4, 1.2, 0.3);
+  // Hair cap — sits on top and wraps the back of the head
+  const hairTopGeo = new THREE.BoxGeometry(0.58, 0.18, 0.58);
+  const hairTop = new THREE.Mesh(hairTopGeo, hairMat);
+  hairTop.position.set(0, 2.32, -0.02);
+  hairTop.castShadow = true;
+  group.add(hairTop);
+
+  const hairBackGeo = new THREE.BoxGeometry(0.58, 0.4, 0.15);
+  const hairBack = new THREE.Mesh(hairBackGeo, hairMat);
+  hairBack.position.set(0, 2.1, -0.25);
+  hairBack.castShadow = true;
+  group.add(hairBack);
+
+  const hairSideGeoL = new THREE.BoxGeometry(0.12, 0.3, 0.4);
+  const hairSideL = new THREE.Mesh(hairSideGeoL, hairMat);
+  hairSideL.position.set(-0.28, 2.15, -0.08);
+  group.add(hairSideL);
+
+  const hairSideR = new THREE.Mesh(hairSideGeoL, hairMat);
+  hairSideR.position.set(0.28, 2.15, -0.08);
+  group.add(hairSideR);
+
+  // Simple face features
+  const eyeMat = new THREE.MeshBasicMaterial({ color: 0x222222 });
+  const eyeGeo = new THREE.BoxGeometry(0.06, 0.04, 0.02);
+  const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
+  eyeL.position.set(-0.12, 2.0, 0.28);
+  group.add(eyeL);
+  const eyeR = new THREE.Mesh(eyeGeo, eyeMat);
+  eyeR.position.set(0.12, 2.0, 0.28);
+  group.add(eyeR);
+
+  // Neck
+  const neckGeo = new THREE.BoxGeometry(0.2, 0.15, 0.2);
+  const neck = new THREE.Mesh(neckGeo, skinMat);
+  neck.position.y = 1.6;
+  group.add(neck);
+
+  // --- Torso ---
+  // Upper torso (wider shoulders)
+  const upperTorsoGeo = new THREE.BoxGeometry(0.9, 0.5, 0.45, 1, 1, 1);
+  const upperTorso = new THREE.Mesh(upperTorsoGeo, skinMat);
+  upperTorso.position.y = 1.3;
+  upperTorso.castShadow = true;
+  group.add(upperTorso);
+
+  // Color accent sash/band across chest for team identification
+  const sashGeo = new THREE.BoxGeometry(0.92, 0.12, 0.47);
+  const sash = new THREE.Mesh(sashGeo, accentMat);
+  sash.position.y = 1.35;
+  group.add(sash);
+
+  // Lower torso (slightly narrower)
+  const lowerTorsoGeo = new THREE.BoxGeometry(0.75, 0.35, 0.4);
+  const lowerTorso = new THREE.Mesh(lowerTorsoGeo, skinMat);
+  lowerTorso.position.y = 0.9;
+  lowerTorso.castShadow = true;
+  group.add(lowerTorso);
+
+  // --- Arms ---
+  // Upper arm (shoulder to elbow)
+  const upperArmGeo = new THREE.BoxGeometry(0.38, 0.18, 0.18);
+
+  const upperArmL = new THREE.Mesh(upperArmGeo, skinMat);
+  upperArmL.position.set(-0.62, 1.32, 0);
+  upperArmL.castShadow = true;
+  group.add(upperArmL);
+
+  const upperArmR = new THREE.Mesh(upperArmGeo, skinMat);
+  upperArmR.position.set(0.62, 1.32, 0);
+  upperArmR.castShadow = true;
+  group.add(upperArmR);
+
+  // Lower arm (elbow to wrist) — slightly thinner
+  const lowerArmGeo = new THREE.BoxGeometry(0.35, 0.15, 0.15);
+
+  const lowerArmL = new THREE.Mesh(lowerArmGeo, skinMat);
+  lowerArmL.position.set(-0.97, 1.32, 0);
+  lowerArmL.castShadow = true;
+  group.add(lowerArmL);
+
+  const lowerArmR = new THREE.Mesh(lowerArmGeo, skinMat);
+  lowerArmR.position.set(0.97, 1.32, 0);
+  lowerArmR.castShadow = true;
+  group.add(lowerArmR);
+
+  // Hands
+  const handGeo = new THREE.BoxGeometry(0.1, 0.1, 0.12);
+
+  const handL = new THREE.Mesh(handGeo, skinMat);
+  handL.position.set(-1.18, 1.32, 0);
+  group.add(handL);
+
+  const handR = new THREE.Mesh(handGeo, skinMat);
+  handR.position.set(1.18, 1.32, 0);
+  group.add(handR);
+
+  // --- Shorts / Hip ---
+  const shortsGeo = new THREE.BoxGeometry(0.78, 0.35, 0.42);
+  const shorts = new THREE.Mesh(shortsGeo, shortsMat);
+  shorts.position.y = 0.58;
+  shorts.castShadow = true;
+  group.add(shorts);
+
+  // --- Legs ---
+  // Upper legs (thigh)
+  const upperLegGeo = new THREE.BoxGeometry(0.22, 0.45, 0.22);
+
+  const upperLegL = new THREE.Mesh(upperLegGeo, skinMat);
+  upperLegL.position.set(-0.2, 0.2, 0);
+  upperLegL.castShadow = true;
+  group.add(upperLegL);
+
+  const upperLegR = new THREE.Mesh(upperLegGeo, skinMat);
+  upperLegR.position.set(0.2, 0.2, 0);
+  upperLegR.castShadow = true;
+  group.add(upperLegR);
+
+  // Lower legs (shin) — slightly thinner
+  const lowerLegGeo = new THREE.BoxGeometry(0.18, 0.45, 0.18);
+
+  const lowerLegL = new THREE.Mesh(lowerLegGeo, skinMat);
+  lowerLegL.position.set(-0.2, -0.25, 0);
+  lowerLegL.castShadow = true;
+  group.add(lowerLegL);
+
+  const lowerLegR = new THREE.Mesh(lowerLegGeo, skinMat);
+  lowerLegR.position.set(0.2, -0.25, 0);
+  lowerLegR.castShadow = true;
+  group.add(lowerLegR);
+
+  // Feet / Shoes
+  const footGeo = new THREE.BoxGeometry(0.2, 0.1, 0.28);
+
+  const footL = new THREE.Mesh(footGeo, shoeMat);
+  footL.position.set(-0.2, -0.5, 0.04);
+  group.add(footL);
+
+  const footR = new THREE.Mesh(footGeo, shoeMat);
+  footR.position.set(0.2, -0.5, 0.04);
+  group.add(footR);
+
+  // --- Gun proxy (held in right hand) ---
+  const gunBodyGeo = new THREE.BoxGeometry(0.12, 0.12, 0.6);
+  const gun = new THREE.Mesh(gunBodyGeo, gunMat);
+  gun.position.set(1.18, 1.32, 0.35);
   group.add(gun);
+
+  // Offset the group so feet are at y=0
+  group.position.y = 0.5;
 
   scene.add(group);
   return group;
@@ -1705,11 +1884,18 @@ function setupInputControls() {
     if (e.code === 'Space') GameState.input.space = true;
     if (e.code === 'ShiftLeft') GameState.input.shift = true;
 
+    // C = Slide (only triggers once per press while on ground, not already sliding)
+    if (e.code === 'KeyC' && !GameState.input.slide && GameState.localPlayer.onGround && !GameState.localPlayer.isDead) {
+      GameState.input.slide = true;
+      GameState._slideSecondsLeft = 0.7; // slide lasts 0.7 seconds
+      playSound('jump'); // brief whoosh-like sound
+    }
+
     // Reload Ammo
     const maxAmmo = WEAPONS[GameState.localPlayer.weapon || 'rifle'].mag;
     if (e.code === 'KeyR' && GameState.localPlayer.ammo < maxAmmo) {
       GameState.localPlayer.ammo = maxAmmo;
-      playSound('reload'); // Using existing hitsound temporarily if no reload sound
+      playSound('reload');
       updateHUD();
     }
   });
@@ -1857,8 +2043,33 @@ function updateLocalPhysics(dt) {
 
   // Friction and acceleration
   // Friction and acceleration
-  let isSliding = GameState.input.shift && GameState.localPlayer.onGround && !isUnderwater;
-  let currentSpeed = isSliding ? CONFIG.playerSpeed * 1.25 : CONFIG.playerSpeed;
+  // ----- Sprint (Shift) & Slide (C) -----
+  const isSprinting = GameState.input.shift && GameState.localPlayer.onGround && !isUnderwater;
+
+  // Tick down slide timer
+  let isSliding = GameState.input.slide && GameState.localPlayer.onGround && !isUnderwater;
+  if (isSliding) {
+    // count down using real dt
+    if (!GameState._slideSecondsLeft) GameState._slideSecondsLeft = 0.7;
+    GameState._slideSecondsLeft -= dt;
+    if (GameState._slideSecondsLeft <= 0) {
+      GameState.input.slide = false;
+      GameState._slideSecondsLeft = 0;
+      isSliding = false;
+    }
+  } else {
+    // Reset countdown when not sliding so it's fresh next press
+    if (!isSliding) GameState._slideSecondsLeft = 0;
+  }
+
+  let currentSpeed;
+  if (isSliding) {
+    currentSpeed = CONFIG.playerSpeed * 1.8; // fast burst
+  } else if (isSprinting) {
+    currentSpeed = CONFIG.playerSpeed * 1.5; // sprint
+  } else {
+    currentSpeed = CONFIG.playerSpeed;        // normal walk
+  }
 
   // Severe movement penalty while aiming down sniper scope
   if (isAiming) {
@@ -1874,15 +2085,20 @@ function updateLocalPhysics(dt) {
     scene.fog.density = 0.007; // Normal fog
   }
 
+  // Camera height: lower while sliding, normal otherwise
   const targetCamY = isSliding ? 0.8 : 1.6;
 
   vel.x = THREE.MathUtils.lerp(vel.x, moveDir.x * currentSpeed, 15 * dt);
   vel.z = THREE.MathUtils.lerp(vel.z, moveDir.z * currentSpeed, 15 * dt);
 
-  // Jump (disable jumping while sliding)
-  if (GameState.input.space && !isSliding) {
+  // Jump — disabled while sliding; jumping cancels a slide
+  if (GameState.input.space) {
+    if (isSliding) {
+      // Jumping out of a slide ends it immediately
+      GameState.input.slide = false;
+      GameState._slideSecondsLeft = 0;
+    }
     if (isUnderwater) {
-      // Swim upwards
       vel.y = THREE.MathUtils.lerp(vel.y, CONFIG.playerSpeed * 0.8, 4 * dt);
       GameState.localPlayer.onGround = false;
     } else if (GameState.localPlayer.onGround) {
