@@ -133,7 +133,7 @@ function switchScreen(screenId) {
 // 2. Create an app (name it anything, e.g. "polygun")
 // 3. Go to Dashboard → your app → API Key
 // 4. Paste the API key below AND update the app name in the URL
-const METERED_API_KEY = '';          // ← PASTE YOUR API KEY HERE
+const METERED_API_KEY = 'pPvTuagPRNJPKRyAnaZXGrDolAelIganV8OLm8poO3D1TSan';          // ← PASTE YOUR API KEY HERE
 const METERED_APP_NAME = 'polygun';  // ← YOUR APP NAME FROM METERED
 // ============================================================
 
@@ -150,7 +150,6 @@ const BASE_ICE_SERVERS = [
 async function fetchIceServers() {
   if (!METERED_API_KEY) {
     console.warn('⚠ No Metered.ca API key set — TURN relay disabled.');
-    console.warn('  Cross-network play will NOT work. Get a free key at https://www.metered.ca/');
     return BASE_ICE_SERVERS;
   }
 
@@ -158,12 +157,21 @@ async function fetchIceServers() {
     const resp = await fetch(
       `https://${METERED_APP_NAME}.metered.live/api/v1/turn/credentials?apiKey=${METERED_API_KEY}`
     );
+    
+    if (resp.status === 401) {
+      console.error('❌ Metered.ca API Key is invalid (401 Unauthorized). Check your API Key.');
+      setStatus('⚠ Relay server access denied. Local play only may work.', 'warn');
+      return BASE_ICE_SERVERS;
+    }
+
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    
     const turnServers = await resp.json();
     console.log('✅ Fetched TURN credentials from Metered.ca:', turnServers.length, 'servers');
     return [...BASE_ICE_SERVERS, ...turnServers];
   } catch (e) {
     console.error('Failed to fetch TURN credentials:', e);
+    setStatus('⚠ Failed to fetch relay config. Connection may be limited.', 'warn');
     return BASE_ICE_SERVERS;
   }
 }
@@ -197,10 +205,13 @@ async function initPeerSession() {
   }
 
   // Fetch fresh TURN credentials before connecting
+  setStatus('📡 Fetching network configuration...', 'info');
   const iceServers = await fetchIceServers();
 
   // Host registers with prefixed room code as Peer ID; clients get a random ID
   const idToRequest = GameState.isHost ? (ROOM_PREFIX + GameState.roomCode) : undefined;
+
+  setStatus('🔌 Connecting to signaling server...', 'info');
 
   // Build PeerJS options — use custom server if configured, else fallback to cloud
   const peerOptions = {
@@ -240,7 +251,7 @@ async function initPeerSession() {
 
   GameState.peer.on('error', (err) => {
     console.error('PeerJS error:', err.type, err);
-    
+
     const errorMessages = {
       'unavailable-id': '⚠ Room code collision. Regenerating...',
       'peer-unavailable': '❌ Room not found. Double-check the code and ensure host is online.',
@@ -265,7 +276,7 @@ async function initPeerSession() {
     }
 
     if (['network', 'server-error', 'socket-error', 'socket-closed'].includes(err.type)) {
-      setStatus('🔄 Retrying connection in 3s...', 'info');
+      setStatus('🔄 Server is waking up or network is unstable. Retrying in 3s...', 'info');
       setTimeout(() => initPeerSession(), 3000);
     }
   });
@@ -492,7 +503,7 @@ function updateLobbyPlayerList() {
     const li = document.createElement('li');
     // The player ID is the full Peer ID including prefix if they are the host
     const isThisPlayerHost = p.id === (ROOM_PREFIX + GameState.roomCode);
-    
+
     li.innerHTML = `
       <div style="display:flex; align-items:center; gap: 10px;">
         <div style="width:16px;height:16px;border-radius:50%;background-color:#${p.color.toString(16).padStart(6, '0')}"></div>
